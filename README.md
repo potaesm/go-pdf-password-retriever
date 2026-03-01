@@ -20,6 +20,19 @@ High-performance, terminal-only brute-force for AES/RC4-encrypted PDFs. The tool
 go build -o bin/pdfpw ./cmd/pdfpw
 ```
 
+macOS build (Intel/ARM compatible):
+
+```bash
+env GOOS=darwin GOARCH=amd64 go build -o bin/pdfpw-darwin-intel ./cmd/pdfpw
+env GOOS=darwin GOARCH=arm64 go build -o bin/pdfpw-darwin-arm ./cmd/pdfpw
+```
+
+Windows build:
+
+```bash
+env GOOS=windows GOARCH=amd64 go build -o bin/pdfpw-windows.exe ./cmd/pdfpw
+```
+
 ## Usage
 
 ```bash

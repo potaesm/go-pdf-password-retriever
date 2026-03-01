@@ -807,15 +807,15 @@ func parseEncryptionObject(obj []byte) (encryptionDict, error) {
 	if p, ok := findIntEntry(obj, "/P"); ok {
 		dict.P = int32(p)
 	}
-	if v, ok := findHexEntry(obj, "/O"); ok {
+	if v, ok := findByteEntry(obj, "/O"); ok {
 		dict.O = v
 	}
-	if u, ok := findHexEntry(obj, "/U"); ok {
+	if u, ok := findByteEntry(obj, "/U"); ok {
 		dict.U = u
 	}
 
 	if dict.V == 0 || dict.R == 0 || len(dict.O) == 0 || len(dict.U) == 0 {
-		return dict, errors.New("incomplete encryption dictionary")
+		return dict, fmt.Errorf("incomplete encryption dictionary: V=%d R=%d len(O)=%d len(U)=%d", dict.V, dict.R, len(dict.O), len(dict.U))
 	}
 
 	return dict, nil
@@ -872,6 +872,85 @@ func findHexEntry(data []byte, key string) ([]byte, bool) {
 		return nil, false
 	}
 	return decoded, true
+}
+
+func findByteEntry(data []byte, key string) ([]byte, bool) {
+	if v, ok := findHexEntry(data, key); ok {
+		return v, true
+	}
+
+	idx := bytes.Index(data, []byte(key))
+	if idx == -1 {
+		return nil, false
+	}
+	idx += len(key)
+	for idx < len(data) && isSpace(data[idx]) {
+		idx++
+	}
+	value, _, ok := readLiteralAt(data, idx)
+	return value, ok
+}
+
+func isSpace(b byte) bool {
+	return b == ' ' || b == '\t' || b == '\n' || b == '\r' || b == '\f'
+}
+
+func readLiteralAt(data []byte, start int) ([]byte, int, bool) {
+	if start >= len(data) || data[start] != '(' {
+		return nil, 0, false
+	}
+
+	buf := make([]byte, 0, 32)
+	depth := 0
+	for i := start + 1; i < len(data); i++ {
+		c := data[i]
+		if c == '\\' {
+			if i+1 >= len(data) {
+				return nil, 0, false
+			}
+			i++
+			switch data[i] {
+			case 'n':
+				buf = append(buf, '\n')
+			case 'r':
+				buf = append(buf, '\r')
+			case 't':
+				buf = append(buf, '\t')
+			case 'b':
+				buf = append(buf, '\b')
+			case 'f':
+				buf = append(buf, '\f')
+			case '\\', '(', ')':
+				buf = append(buf, data[i])
+			default:
+				if data[i] >= '0' && data[i] <= '7' {
+					octal := int(data[i] - '0')
+					count := 1
+					for count < 3 && i+1 < len(data) && data[i+1] >= '0' && data[i+1] <= '7' {
+						i++
+						octal = octal*8 + int(data[i]-'0')
+						count++
+					}
+					buf = append(buf, byte(octal))
+				} else {
+					buf = append(buf, data[i])
+				}
+			}
+		} else if c == '(' {
+			depth++
+			buf = append(buf, '(')
+		} else if c == ')' {
+			if depth == 0 {
+				return buf, i, true
+			}
+			depth--
+			buf = append(buf, ')')
+		} else {
+			buf = append(buf, c)
+		}
+	}
+
+	return nil, 0, false
 }
 
 func expectFile(path string) error {
