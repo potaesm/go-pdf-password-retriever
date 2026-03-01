@@ -64,8 +64,9 @@ type ProgressInfo struct {
 }
 
 type charsetState struct {
-	Length  int   `json:"length"`
-	Indices []int `json:"indices"`
+	Length    int   `json:"length"`
+	Indices   []int `json:"indices"`
+	NextIndex int64 `json:"next_index,omitempty"`
 }
 
 type checkpointState struct {
@@ -153,8 +154,26 @@ func Crack(ctx context.Context, cfg Config) (Result, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	passwordCh := make(chan string)
 	errCh := make(chan error, 1)
+
+	var passwordCh chan string
+	if cfg.Wordlist != "" {
+		passwordBuf := cfg.Workers * 8
+		if passwordBuf < 4 {
+			passwordBuf = 4
+		}
+		passwordCh = make(chan string, passwordBuf)
+	}
+
+	var charsetIter *charsetIterator
+	if cfg.Wordlist == "" {
+		resumeIndex := resumeCharsetIndex(resume.CharsetState, len(cfg.Charset), cfg.MinPasswordLength)
+		var err error
+		charsetIter, err = newCharsetIterator(cfg.Charset, cfg.MinPasswordLength, cfg.MaxPasswordLength, resumeIndex)
+		if err != nil {
+			return Result{}, err
+		}
+	}
 
 	var attempts int64 = resume.Attempts
 
@@ -177,9 +196,9 @@ func Crack(ctx context.Context, cfg Config) (Result, error) {
 		}()
 	}
 
-	go func() {
-		defer close(passwordCh)
-		if cfg.Wordlist != "" {
+	if cfg.Wordlist != "" {
+		go func() {
+			defer close(passwordCh)
 			if err := streamWordlist(ctx, cfg.Wordlist, resume, &attempts, saver, passwordCh); err != nil && !errors.Is(err, context.Canceled) {
 				select {
 				case errCh <- err:
@@ -187,17 +206,8 @@ func Crack(ctx context.Context, cfg Config) (Result, error) {
 				}
 				cancel()
 			}
-			return
-		}
-
-		if err := generateFromCharset(ctx, cfg.Charset, cfg.MinPasswordLength, cfg.MaxPasswordLength, resume, &attempts, saver, passwordCh); err != nil && !errors.Is(err, context.Canceled) {
-			select {
-			case errCh <- err:
-			default:
-			}
-			cancel()
-		}
-	}()
+		}()
+	}
 
 	found := make(chan string, 1)
 	var wg sync.WaitGroup
@@ -209,23 +219,60 @@ func Crack(ctx context.Context, cfg Config) (Result, error) {
 				select {
 				case <-ctx.Done():
 					return
-				case pw, ok := <-passwordCh:
+				default:
+				}
+
+				var (
+					pw  string
+					idx int64
+					ok  bool
+				)
+
+				if cfg.Wordlist != "" {
+					select {
+					case <-ctx.Done():
+						return
+					case pw, ok = <-passwordCh:
+						if !ok {
+							return
+						}
+					}
+				} else {
+					pw, idx, ok = charsetIter.Next()
 					if !ok {
 						return
 					}
+				}
 
-					atomic.AddInt64(&attempts, 1)
-					key := encryptionKey(pw, enc)
-					if key == nil {
-						continue
+				atomic.AddInt64(&attempts, 1)
+				key := encryptionKey(pw, enc)
+				if key == nil {
+					continue
+				}
+
+				if isValidUserPassword(key, enc) {
+					select {
+					case found <- pw:
+						cancel()
+					default:
 					}
+					return
+				}
 
-					if isValidUserPassword(key, enc) {
+				if saver != nil && cfg.Wordlist == "" {
+					state := checkpointState{
+						Mode: modeCharset,
+						CharsetState: &charsetState{
+							NextIndex: idx + 1,
+						},
+						Attempts: atomic.LoadInt64(&attempts),
+					}
+					if err := saver.MaybeSave(state); err != nil {
 						select {
-						case found <- pw:
-							cancel()
+						case errCh <- err:
 						default:
 						}
+						cancel()
 						return
 					}
 				}
@@ -287,6 +334,9 @@ func (s *checkpointSaver) MaybeSave(state checkpointState) error {
 	if s == nil || s.path == "" {
 		return nil
 	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	if s.interval > 0 && !s.last.IsZero() && time.Since(s.last) < s.interval {
 		return nil
@@ -460,78 +510,135 @@ func streamWordlist(ctx context.Context, path string, resume checkpointState, at
 	return nil
 }
 
-func generateFromCharset(ctx context.Context, charset string, minLen, maxLen int, resume checkpointState, attempts *int64, saver *checkpointSaver, out chan<- string) error {
+func newCharsetIterator(charset string, minLen, maxLen int, resumeIndex int64) (*charsetIterator, error) {
 	if len(charset) == 0 {
-		return errors.New("charset cannot be empty")
+		return nil, errors.New("charset cannot be empty")
 	}
 
-	startLength := minLen
-	var resumeIndices []int
-	if resume.Mode == modeCharset && resume.CharsetState != nil {
-		if resume.CharsetState.Length >= minLen && resume.CharsetState.Length <= maxLen {
-			startLength = resume.CharsetState.Length
-			resumeIndices = append([]int(nil), resume.CharsetState.Indices...)
-		}
-	}
-
-	base := len(charset)
-	for length := startLength; length <= maxLen; length++ {
+	ranges := make([]charsetRange, 0, maxLen-minLen+1)
+	start := int64(0)
+	for length := minLen; length <= maxLen; length++ {
 		if length <= 0 {
 			continue
 		}
 
-		indices := make([]int, length)
-		if len(resumeIndices) == length {
-			copy(indices, resumeIndices)
-			resumeIndices = nil
+		count := powInt64(len(charset), length)
+		if count <= 0 {
+			count = math.MaxInt64
 		}
 
-		for {
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			default:
-			}
+		end := start + count
+		if end < 0 || end < start {
+			end = math.MaxInt64
+		}
 
-			var b strings.Builder
-			for _, idx := range indices {
-				b.WriteByte(charset[idx])
-			}
+		ranges = append(ranges, charsetRange{
+			length: length,
+			start:  start,
+			end:    end,
+		})
 
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case out <- b.String():
-			}
-
-			if saver != nil {
-				nextState := &charsetState{Length: length, Indices: append([]int(nil), indices...)}
-				state := checkpointState{Mode: modeCharset, CharsetState: nextState, Attempts: atomic.LoadInt64(attempts)}
-				if err := saver.MaybeSave(state); err != nil {
-					return err
-				}
-			}
-
-			if !incrementIndices(indices, base) {
-				break
-			}
+		if math.MaxInt64-start < count {
+			start = math.MaxInt64
+		} else {
+			start = end
 		}
 	}
 
-	return nil
+	return &charsetIterator{
+		charset: []byte(charset),
+		base:    len(charset),
+		ranges:  ranges,
+		total:   start,
+		next:    min(resumeIndex, start),
+	}, nil
 }
 
-func incrementIndices(indices []int, base int) bool {
-	for i := len(indices) - 1; i >= 0; i-- {
-		if indices[i] < base-1 {
-			indices[i]++
-			for j := i + 1; j < len(indices); j++ {
-				indices[j] = 0
-			}
-			return true
+func powInt64(base, exp int) int64 {
+	result := int64(1)
+	for i := 0; i < exp; i++ {
+		if result > math.MaxInt64/int64(base) {
+			return math.MaxInt64
+		}
+		result *= int64(base)
+	}
+	return result
+}
+
+func min(a, b int64) int64 {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+type charsetIterator struct {
+	charset []byte
+	base    int
+	ranges  []charsetRange
+	total   int64
+	next    int64
+}
+
+type charsetRange struct {
+	length int
+	start  int64
+	end    int64
+}
+
+func resumeCharsetIndex(state *charsetState, base, minLen int) int64 {
+	if state == nil {
+		return 0
+	}
+	if state.NextIndex > 0 {
+		return state.NextIndex
+	}
+	if state.Length < minLen || len(state.Indices) == 0 {
+		return 0
+	}
+	index := int64(0)
+	for length := minLen; length < state.Length; length++ {
+		index += powInt64(base, length)
+	}
+	value := int64(0)
+	for _, digit := range state.Indices {
+		value = value*int64(base) + int64(digit)
+	}
+	index += value
+	if index < 0 {
+		return 0
+	}
+	return index
+}
+
+func (it *charsetIterator) Next() (string, int64, bool) {
+	idx := atomic.AddInt64(&it.next, 1) - 1
+	if idx >= it.total {
+		return "", 0, false
+	}
+	return it.passwordAt(idx)
+}
+
+func (it *charsetIterator) passwordAt(idx int64) (string, int64, bool) {
+	var rng *charsetRange
+	for i := range it.ranges {
+		if idx >= it.ranges[i].start && idx < it.ranges[i].end {
+			rng = &it.ranges[i]
+			break
 		}
 	}
-	return false
+	if rng == nil {
+		return "", 0, false
+	}
+
+	offset := idx - rng.start
+	pass := make([]byte, rng.length)
+	for i := rng.length - 1; i >= 0; i-- {
+		pass[i] = it.charset[offset%int64(it.base)]
+		offset /= int64(it.base)
+	}
+
+	return string(pass), idx, true
 }
 
 func encryptionKey(password string, dict encryptionDict) []byte {
