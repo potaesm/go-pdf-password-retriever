@@ -53,7 +53,7 @@ env GOOS=windows GOARCH=amd64 go build -o bin/pdfpw-windows.exe ./cmd/pdfpw
 | `-checkpoint-interval` | How often to persist state; setting `0` disables checkpointing | `10m` |
 | `-progress-interval` | How often to print the progress/ETA line; `0` silences updates | `5s` |
 
-The runtime scheduler automatically sets `GOMAXPROCS` to the larger of `runtime.NumCPU()` and the total number of worker goroutines produced by `-workers` × `-overcommit`. With `-overcommit` set to `3` by default, the standard command (`./bin/pdfpw -pdf Lorem_Ipsum.pdf -charset "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ" -min 4 -max 4`) launches enough goroutines to keep all CPU threads saturated without requiring any additional configuration.
+The runtime scheduler automatically sets `GOMAXPROCS` to the larger of `runtime.NumCPU()` and the total number of worker goroutines produced by `-workers` × `-overcommit`. With `-overcommit` set to `4` by default, the standard command (`./bin/pdfpw -pdf Lorem_Ipsum.pdf -charset "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ" -min 4 -max 4`) launches enough goroutines to keep all CPU threads saturated without requiring any additional configuration.
 
 ### Examples
 
