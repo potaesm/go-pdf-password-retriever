@@ -2,7 +2,7 @@
 
 ## TLDR;
 1. `go build -o bin/pdfpw ./cmd/pdfpw`
-2. `./bin/pdfpw -pdf /home/potaesm/go-pdf-password-retriever/Lorem_Ipsum.pdf -charset "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ" -min 4 -max 4`
+2. `./bin/pdfpw -pdf /path/to/go-pdf-password-retriever/Lorem_Ipsum.pdf -charset "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ" -min 4 -max 4`
 3. The shipped PDF unlocks with `AbXy` after the above run completes.
 
 ## What It Does
@@ -13,7 +13,7 @@
 ## Build & Run
 ```bash
 go build -o bin/pdfpw ./cmd/pdfpw
-./bin/pdfpw -pdf /home/potaesm/go-pdf-password-retriever/Lorem_Ipsum.pdf -charset "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ" -min 4 -max 4
+./bin/pdfpw -pdf /path/to/go-pdf-password-retriever/Lorem_Ipsum.pdf -charset "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ" -min 4 -max 4
 ```
 The command above targets the sample PDF with a four-character mixed-case password and runs as many goroutines as `runtime.NumCPU()` (and four overcommitted goroutines per worker) to keep all cores busy.
 
