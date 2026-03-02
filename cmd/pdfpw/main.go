@@ -131,17 +131,14 @@ func main() {
 	}
 
 	elapsed := time.Since(start)
-	eta := time.Duration(0)
-	if res.TotalCandidates > 0 && res.Attempts > 0 && res.Attempts < res.TotalCandidates {
+	fmt.Printf("Password found: %q (tried %d candidates in %s)\n", res.Password, res.Attempts, elapsed)
+
+	if res.TotalCandidates > 0 && res.Attempts > 0 && res.Attempts < res.TotalCandidates && res.Password == "" {
 		rate := float64(res.Attempts) / math.Max(elapsed.Seconds(), 1e-9)
 		remaining := float64(res.TotalCandidates - res.Attempts)
 		if rate > 0 {
-			eta = time.Duration(remaining/rate) * time.Second
+			eta := time.Duration(remaining/rate) * time.Second
+			fmt.Printf("Estimated completion time remaining: %s\n", eta)
 		}
-	}
-
-	fmt.Printf("Password found: %q (tried %d candidates in %s)\n", res.Password, res.Attempts, elapsed)
-	if eta > 0 {
-		fmt.Printf("Estimated completion time remaining: %s\n", eta)
 	}
 }
