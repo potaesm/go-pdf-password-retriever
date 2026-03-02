@@ -20,6 +20,7 @@ func main() {
 	minLen := flag.Int("min", 1, "minimum password length when generating candidates")
 	maxLen := flag.Int("max", 4, "maximum password length when generating candidates")
 	workers := flag.Int("workers", runtime.NumCPU(), "number of parallel workers")
+	overcommit := flag.Float64("overcommit", 3, "multiplier for worker goroutines relative to -workers (must be >= 1)")
 	timeout := flag.Duration("timeout", 0, "optional timeout for cracking (e.g., 30s, 2m)")
 	checkpoint := flag.String("checkpoint", "", "path to the checkpoint file (default: <pdf>.checkpoint)")
 	checkpointInterval := flag.Duration("checkpoint-interval", 10*time.Minute, "duration between checkpoint saves; set 0 to disable")
@@ -78,6 +79,7 @@ func main() {
 		MinPasswordLength:  *minLen,
 		MaxPasswordLength:  *maxLen,
 		Workers:            *workers,
+		Overcommit:         *overcommit,
 		CheckpointPath:     cpPath,
 		CheckpointInterval: *checkpointInterval,
 		ProgressInterval:   *progressInterval,

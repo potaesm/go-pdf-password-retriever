@@ -44,6 +44,7 @@ type Config struct {
 	MinPasswordLength  int
 	MaxPasswordLength  int
 	Workers            int
+	Overcommit         float64
 	CheckpointPath     string
 	CheckpointInterval time.Duration
 	ProgressInterval   time.Duration
@@ -131,8 +132,27 @@ func Crack(ctx context.Context, cfg Config) (Result, error) {
 		cfg.MaxPasswordLength = cfg.MinPasswordLength
 	}
 
-	if cfg.Workers <= 0 {
-		cfg.Workers = runtime.NumCPU()
+	overcommit := cfg.Overcommit
+	if overcommit < 1 {
+		overcommit = 1
+	}
+
+	workerBase := cfg.Workers
+	if workerBase <= 0 {
+		workerBase = runtime.NumCPU()
+	}
+	if workerBase < runtime.NumCPU() {
+		workerBase = runtime.NumCPU()
+	}
+
+	workerGoroutines := int(math.Ceil(float64(workerBase) * overcommit))
+	if workerGoroutines < workerBase {
+		workerGoroutines = workerBase
+	}
+
+	maxProcs := workerGoroutines
+	if runtime.GOMAXPROCS(0) != maxProcs {
+		runtime.GOMAXPROCS(maxProcs)
 	}
 
 	if err := expectFile(cfg.PDFPath); err != nil {
@@ -177,7 +197,7 @@ func Crack(ctx context.Context, cfg Config) (Result, error) {
 	// Use batches to prevent channel lock contention
 	var passwordCh chan []string
 	if cfg.Wordlist != "" {
-		passwordCh = make(chan []string, cfg.Workers*2)
+		passwordCh = make(chan []string, workerGoroutines*2)
 	}
 
 	var charsetIter *charsetIterator
@@ -227,7 +247,7 @@ func Crack(ctx context.Context, cfg Config) (Result, error) {
 	found := make(chan string, 1)
 	var wg sync.WaitGroup
 
-	for i := 0; i < cfg.Workers; i++ {
+	for i := 0; i < workerGoroutines; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -249,10 +269,13 @@ func Crack(ctx context.Context, cfg Config) (Result, error) {
 						return
 					}
 
+					var processed int64
 					for _, pw := range batch {
+						processed++
 						pwBytes := []byte(pw)
 						key := encryptionKeyFast(pwBytes, enc, ws)
 						if key != nil && isValidUserPasswordFast(key, enc, ws) {
+							atomic.AddInt64(&attempts, processed)
 							select {
 							case found <- pw:
 								cancel()
@@ -261,7 +284,7 @@ func Crack(ctx context.Context, cfg Config) (Result, error) {
 							return
 						}
 					}
-					atomic.AddInt64(&attempts, int64(len(batch)))
+					atomic.AddInt64(&attempts, processed)
 
 				} else {
 					// Charset Batching - Claim 10,000 indices atomically to prevent locking
@@ -274,6 +297,7 @@ func Crack(ctx context.Context, cfg Config) (Result, error) {
 						pwBytes := charsetIter.passwordBytesAt(idx, &passBuf)
 						key := encryptionKeyFast(pwBytes, enc, ws)
 						if key != nil && isValidUserPasswordFast(key, enc, ws) {
+							atomic.AddInt64(&attempts, int64(idx-startIdx+1))
 							select {
 							case found <- string(pwBytes):
 								cancel()
@@ -602,7 +626,7 @@ func (it *charsetIterator) passwordBytesAt(idx int64, buf *[]byte) []byte {
 
 func runSignature(cfg Config) string {
 	h := sha256.New()
-	fmt.Fprintf(h, "%s|%s|%s|%d|%d|%d", cfg.PDFPath, cfg.Wordlist, cfg.Charset, cfg.MinPasswordLength, cfg.MaxPasswordLength, cfg.Workers)
+	fmt.Fprintf(h, "%s|%s|%s|%d|%d|%d|%f", cfg.PDFPath, cfg.Wordlist, cfg.Charset, cfg.MinPasswordLength, cfg.MaxPasswordLength, cfg.Workers, cfg.Overcommit)
 	return fmt.Sprintf("%x", h.Sum(nil))
 }
 
