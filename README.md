@@ -47,7 +47,7 @@ env GOOS=windows GOARCH=amd64 go build -o bin/pdfpw-windows.exe ./cmd/pdfpw
 | `-min` | Minimum password length (inclusive) | `1` |
 | `-max` | Maximum password length (inclusive) | `4` |
 | `-workers` | Number of concurrent workers | `runtime.NumCPU()` |
-| `-overcommit` | Multiplier that spawns additional goroutines per worker to keep more OS threads busy (`>= 1`) | `3` |
+| `-overcommit` | Multiplier that spawns additional goroutines per worker to keep more OS threads busy (`>= 1`) | `runtime.NumCPU()` |
 | `-timeout` | Optional stop duration (e.g., `30s`, `2m`) | `0` (no timeout) |
 | `-checkpoint` | Checkpoint file path (defaults to `<pdf>.checkpoint` when checkpointing is enabled) | `` |
 | `-checkpoint-interval` | How often to persist state; setting `0` disables checkpointing | `10m` |

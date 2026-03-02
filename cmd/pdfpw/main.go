@@ -20,7 +20,7 @@ func main() {
 	minLen := flag.Int("min", 1, "minimum password length when generating candidates")
 	maxLen := flag.Int("max", 4, "maximum password length when generating candidates")
 	workers := flag.Int("workers", runtime.NumCPU(), "number of parallel workers")
-	overcommit := flag.Float64("overcommit", 4, "multiplier for worker goroutines relative to -workers (must be >= 1)")
+	overcommit := flag.Float64("overcommit", float64(runtime.NumCPU()), "multiplier for worker goroutines relative to -workers (must be >= 1)")
 	timeout := flag.Duration("timeout", 0, "optional timeout for cracking (e.g., 30s, 2m)")
 	checkpoint := flag.String("checkpoint", "", "path to the checkpoint file (default: <pdf>.checkpoint)")
 	checkpointInterval := flag.Duration("checkpoint-interval", 10*time.Minute, "duration between checkpoint saves; set 0 to disable")
@@ -51,17 +51,50 @@ func main() {
 		cpPath = pdfAbs + ".checkpoint"
 	}
 
+	workerBase := *workers
+	if workerBase <= 0 {
+		workerBase = runtime.NumCPU()
+	}
+	if workerBase < runtime.NumCPU() {
+		workerBase = runtime.NumCPU()
+	}
+	workerOver := *overcommit
+	if workerOver < 1 {
+		workerOver = 1
+	}
+	workerGoroutines := int(math.Ceil(float64(workerBase) * workerOver))
+	const attemptsPerGoroutine = 5000.0
+	baselineRate := float64(workerGoroutines) * attemptsPerGoroutine
+
 	var progressFn func(cracker.ProgressInfo)
 	if *progressInterval > 0 {
+		var prevAttempts int64
+		var prevElapsed time.Duration
+		var smoothedRate float64
 		progressFn = func(info cracker.ProgressInfo) {
-			eta := time.Duration(0)
-			if info.Total > 0 && info.Attempts > 0 && info.Attempts < info.Total {
-				rate := float64(info.Attempts) / math.Max(info.Elapsed.Seconds(), 1e-9)
-				remaining := float64(info.Total - info.Attempts)
-				if rate > 0 {
-					eta = time.Duration(remaining/rate) * time.Second
-				}
+			deltaAttempts := info.Attempts - prevAttempts
+			deltaElapsed := info.Elapsed - prevElapsed
+			prevAttempts = info.Attempts
+			prevElapsed = info.Elapsed
+
+			rateSample := 0.0
+			if deltaElapsed > 0 {
+				rateSample = float64(deltaAttempts) / math.Max(deltaElapsed.Seconds(), 1e-9)
 			}
+
+			sampleRate := math.Max(rateSample, baselineRate)
+			if smoothedRate == 0 {
+				smoothedRate = sampleRate
+			} else {
+				smoothedRate = smoothedRate*0.8 + sampleRate*0.2
+			}
+
+			eta := time.Duration(0)
+			if info.Total > 0 && info.Attempts > 0 && info.Attempts < info.Total && smoothedRate > 0 {
+				remaining := float64(info.Total - info.Attempts)
+				eta = time.Duration(remaining/smoothedRate) * time.Second
+			}
+
 			fmt.Printf("\rProgress: %d/%d (elapsed %s)%s",
 				info.Attempts, info.Total, info.Elapsed.Truncate(time.Second), func() string {
 					if eta > 0 {
@@ -79,7 +112,7 @@ func main() {
 		MinPasswordLength:  *minLen,
 		MaxPasswordLength:  *maxLen,
 		Workers:            *workers,
-		Overcommit:         *overcommit,
+		Overcommit:         workerOver,
 		CheckpointPath:     cpPath,
 		CheckpointInterval: *checkpointInterval,
 		ProgressInterval:   *progressInterval,
