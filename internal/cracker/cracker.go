@@ -141,16 +141,16 @@ func Crack(ctx context.Context, cfg Config) (Result, error) {
 	if workerBase <= 0 {
 		workerBase = runtime.NumCPU()
 	}
-	if workerBase < runtime.NumCPU() {
-		workerBase = runtime.NumCPU()
-	}
 
 	workerGoroutines := int(math.Ceil(float64(workerBase) * overcommit))
 	if workerGoroutines < workerBase {
 		workerGoroutines = workerBase
 	}
 
-	maxProcs := workerGoroutines
+	maxProcs := runtime.NumCPU()
+	if workerBase > maxProcs {
+		maxProcs = workerBase
+	}
 	if runtime.GOMAXPROCS(0) != maxProcs {
 		runtime.GOMAXPROCS(maxProcs)
 	}
@@ -348,6 +348,7 @@ func Crack(ctx context.Context, cfg Config) (Result, error) {
 				_ = os.Remove(cfg.CheckpointPath)
 			}
 		}
+		res.Attempts = atomic.LoadInt64(&attempts)
 		res.TotalCandidates = totalCandidates
 		return res, retErr
 	}
@@ -808,7 +809,7 @@ func readEncryptionDict(pdfPath string) (encryptionDict, error) {
 		return encryptionDict{}, err
 	}
 
-	dict, err := parseEncryptionObject(obj)
+	dict, err := parseEncryptionObject(obj, data)
 	if err != nil {
 		return encryptionDict{}, err
 	}
@@ -968,7 +969,7 @@ func findObject(data []byte, objNum, genNum int) ([]byte, error) {
 	return data[start : start+end], nil
 }
 
-func parseEncryptionObject(obj []byte) (encryptionDict, error) {
+func parseEncryptionObject(obj []byte, pdfData []byte) (encryptionDict, error) {
 	dict := encryptionDict{}
 	if d, ok := findIntEntry(obj, "/V"); ok {
 		dict.V = d
@@ -982,10 +983,10 @@ func parseEncryptionObject(obj []byte) (encryptionDict, error) {
 	if p, ok := findIntEntry(obj, "/P"); ok {
 		dict.P = int32(p)
 	}
-	if v, ok := findByteEntry(obj, "/O"); ok {
+	if v, ok := findByteEntry(obj, pdfData, "/O"); ok {
 		dict.O = v
 	}
-	if u, ok := findByteEntry(obj, "/U"); ok {
+	if u, ok := findByteEntry(obj, pdfData, "/U"); ok {
 		dict.U = u
 	}
 
@@ -1022,38 +1023,7 @@ func findIntEntry(data []byte, key string) (int, bool) {
 	return val, true
 }
 
-func findHexEntry(data []byte, key string) ([]byte, bool) {
-	idx := bytes.Index(data, []byte(key))
-	if idx == -1 {
-		return nil, false
-	}
-	idx += len(key)
-	for idx < len(data) && (data[idx] == ' ' || data[idx] == '\n' || data[idx] == '\r' || data[idx] == '\t') {
-		idx++
-	}
-	if idx >= len(data) || data[idx] != '<' {
-		return nil, false
-	}
-	idx++
-	start := idx
-	for idx < len(data) && data[idx] != '>' {
-		idx++
-	}
-	if idx >= len(data) {
-		return nil, false
-	}
-	decoded, err := hex.DecodeString(string(data[start:idx]))
-	if err != nil {
-		return nil, false
-	}
-	return decoded, true
-}
-
-func findByteEntry(data []byte, key string) ([]byte, bool) {
-	if v, ok := findHexEntry(data, key); ok {
-		return v, true
-	}
-
+func findByteEntry(data, pdfData []byte, key string) ([]byte, bool) {
 	idx := bytes.Index(data, []byte(key))
 	if idx == -1 {
 		return nil, false
@@ -1062,8 +1032,121 @@ func findByteEntry(data []byte, key string) ([]byte, bool) {
 	for idx < len(data) && isSpace(data[idx]) {
 		idx++
 	}
-	value, _, ok := readLiteralAt(data, idx)
-	return value, ok
+	if idx >= len(data) {
+		return nil, false
+	}
+
+	switch data[idx] {
+	case '(':
+		value, _, ok := readLiteralAt(data, idx)
+		return value, ok
+	case '<':
+		if idx+1 < len(data) && data[idx+1] == '<' {
+			return nil, false
+		}
+		end := idx + 1
+		for end < len(data) && data[end] != '>' {
+			end++
+		}
+		if end >= len(data) {
+			return nil, false
+		}
+		decoded, err := hex.DecodeString(string(data[idx+1 : end]))
+		if err != nil {
+			return nil, false
+		}
+		return decoded, true
+	default:
+		objNum, genNum, ok := parseObjectRef(data[idx:])
+		if !ok {
+			return nil, false
+		}
+		obj, err := findObject(pdfData, objNum, genNum)
+		if err != nil {
+			return nil, false
+		}
+		val, found := extractLiteralOrHex(obj)
+		if !found {
+			return nil, false
+		}
+		return val, true
+	}
+}
+
+func extractLiteralOrHex(data []byte) ([]byte, bool) {
+	for i := 0; i < len(data); i++ {
+		switch data[i] {
+		case '(':
+			value, _, ok := readLiteralAt(data, i)
+			if ok {
+				return value, true
+			}
+		case '<':
+			if i+1 < len(data) && data[i+1] == '<' {
+				i++
+				continue
+			}
+			end := i + 1
+			for end < len(data) && data[end] != '>' {
+				end++
+			}
+			if end >= len(data) {
+				return nil, false
+			}
+			decoded, err := hex.DecodeString(string(data[i+1 : end]))
+			if err != nil {
+				return nil, false
+			}
+			return decoded, true
+		}
+	}
+	return nil, false
+}
+
+func parseObjectRef(data []byte) (objNum, genNum int, ok bool) {
+	i := skipSpaces(data, 0)
+	objNum, n := parseIntAt(data[i:])
+	if n == 0 {
+		return 0, 0, false
+	}
+	i += n
+	i = skipSpaces(data, i)
+	genNum, n2 := parseIntAt(data[i:])
+	if n2 == 0 {
+		return 0, 0, false
+	}
+	i += n2
+	i = skipSpaces(data, i)
+	if i >= len(data) || data[i] != 'R' {
+		return 0, 0, false
+	}
+	return objNum, genNum, true
+}
+
+func parseIntAt(data []byte) (value int, consumed int) {
+	i := 0
+	if i < len(data) && (data[i] == '+' || data[i] == '-') {
+		i++
+	}
+	startDigits := i
+	for i < len(data) && data[i] >= '0' && data[i] <= '9' {
+		i++
+	}
+	if startDigits == i {
+		return 0, 0
+	}
+	val, err := strconv.Atoi(string(data[:i]))
+	if err != nil {
+		return 0, 0
+	}
+	return val, i
+}
+
+func skipSpaces(data []byte, idx int) int {
+	for idx < len(data) && isSpace(data[idx]) {
+		idx++
+	}
+	return idx
 }
 
 func isSpace(b byte) bool {

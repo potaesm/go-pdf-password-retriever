@@ -1,7 +1,9 @@
 package cracker
 
 import (
+	"bytes"
 	"context"
+	"encoding/hex"
 	"os"
 	"path/filepath"
 	"testing"
@@ -76,5 +78,34 @@ func TestCrack_WithCharset(t *testing.T) {
 
 	if res.Attempts == 0 {
 		t.Fatalf("expected at least one attempt")
+	}
+}
+
+func TestParseEncryptionObject_WithIndirectStrings(t *testing.T) {
+	pdfData := []byte(`
+3 0 obj
+<< /V 4 /R 4 /O 5 0 R /U 6 0 R /Length 128 /P -1020 >>
+endobj
+5 0 obj
+<0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef>
+endobj
+6 0 obj
+(abcdefghijklmnop)
+endobj
+`)
+
+	obj := []byte("<< /V 4 /R 4 /O 5 0 R /U 6 0 R /Length 128 /P -1020 >>")
+	dict, err := parseEncryptionObject(obj, pdfData)
+	if err != nil {
+		t.Fatalf("parse encryption object: %v", err)
+	}
+
+	expectedO, _ := hex.DecodeString("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+	if !bytes.Equal(dict.O, expectedO) {
+		t.Fatalf("unexpected O value")
+	}
+
+	if got := string(dict.U); got != "abcdefghijklmnop" {
+		t.Fatalf("unexpected U literal: %q", got)
 	}
 }
