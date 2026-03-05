@@ -79,11 +79,13 @@ func main() {
 	charset := flag.String("charset", "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789", "character set to build passwords from")
 	minLen := flag.Int("min", 1, "minimum password length when generating candidates")
 	maxLen := flag.Int("max", 4, "maximum password length when generating candidates")
+	discover := flag.Bool("discover", false, "run the discovery/warmup phase and exit with recommendations")
 	var workersFlag trackedIntFlag
-	workersFlag.value = runtime.NumCPU()
+	defaultWorkers := runtime.NumCPU() * runtime.NumCPU()
+	workersFlag.value = defaultWorkers
 	flag.Var(&workersFlag, "workers", "number of parallel workers (omit to warm up/auto-tune)")
 	var overcommitFlag trackedFloatFlag
-	overcommitFlag.value = 1
+	overcommitFlag.value = float64(defaultWorkers)
 	flag.Var(&overcommitFlag, "overcommit", "multiplier for worker goroutines relative to -workers (omit to warm up/auto-tune)")
 	timeout := flag.Duration("timeout", 0, "optional timeout for cracking (e.g., 30s, 2m)")
 	checkpoint := flag.String("checkpoint", "", "path to the checkpoint file (default: <pdf>.checkpoint)")
@@ -103,11 +105,10 @@ func main() {
 		os.Exit(1)
 	}
 
-	autoTune := !workersFlag.changed && !overcommitFlag.changed
 	workersVal := workersFlag.value
 	overcommitVal := overcommitFlag.value
 	timeoutLeft := *timeout
-	if autoTune {
+	if *discover {
 		warmupCfg := cracker.Config{
 			PDFPath:           pdfAbs,
 			Wordlist:          *wordlist,
@@ -214,7 +215,7 @@ func main() {
 				eta = time.Duration(remaining/smoothedRate) * time.Second
 			}
 
-			fmt.Printf("\rProgress: %d/%d (elapsed %s)%s",
+			fmt.Printf("Progress: %d/%d (elapsed %s)%s\n",
 				info.Attempts, info.Total, info.Elapsed.Truncate(time.Second), func() string {
 					if eta > 0 {
 						return fmt.Sprintf(" ETA %s", eta)
