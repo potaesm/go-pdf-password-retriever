@@ -114,15 +114,17 @@ func main() {
 	timeoutLeft := *timeout
 	if *discover {
 		warmupCfg := cracker.Config{
-			PDFPath:           pdfAbs,
-			Wordlist:          *wordlist,
-			Charset:           *charset,
-			MinPasswordLength: *minLen,
-			MaxPasswordLength: *maxLen,
-			Workers:           runtime.NumCPU(),
-			Overcommit:        1,
-			ProgressInterval:  0,
-			Progress:          nil,
+			PDFPath:            pdfAbs,
+			Wordlist:           *wordlist,
+			Charset:            *charset,
+			MinPasswordLength:  *minLen,
+			MaxPasswordLength:  *maxLen,
+			Workers:            runtime.NumCPU(),
+			Overcommit:         1,
+			CheckpointPath:     cpPath,
+			CheckpointInterval: *checkpointInterval,
+			ProgressInterval:   0,
+			Progress:           nil,
 		}
 		printSample := func(prefix string, sample warmupSample) {
 			if sample.Attempts == 0 {
@@ -198,6 +200,9 @@ func main() {
 			}
 
 			sampleRate := rateSample
+			if sampleRate <= 0 {
+				sampleRate = 1
+			}
 			if smoothedRate == 0 {
 				smoothedRate = sampleRate
 			} else {
