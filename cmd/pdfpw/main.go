@@ -107,6 +107,10 @@ func main() {
 
 	workersVal := workersFlag.value
 	overcommitVal := overcommitFlag.value
+	cpPath := *checkpoint
+	if cpPath == "" && *checkpointInterval > 0 {
+		cpPath = pdfAbs + ".checkpoint"
+	}
 	timeoutLeft := *timeout
 	if *discover {
 		warmupCfg := cracker.Config{
@@ -166,11 +170,6 @@ func main() {
 		defer cancel()
 	}
 
-	cpPath := *checkpoint
-	if cpPath == "" && *checkpointInterval > 0 {
-		cpPath = pdfAbs + ".checkpoint"
-	}
-
 	workerBase := workersVal
 	if workerBase <= 0 {
 		workerBase = runtime.NumCPU()
@@ -182,10 +181,6 @@ func main() {
 	if workerOver < 1 {
 		workerOver = 1
 	}
-	workerGoroutines := int(math.Ceil(float64(workerBase) * workerOver))
-	const attemptsPerGoroutine = 5000.0
-	baselineRate := float64(workerGoroutines) * attemptsPerGoroutine
-
 	var progressFn func(cracker.ProgressInfo)
 	if *progressInterval > 0 {
 		var prevAttempts int64
@@ -202,7 +197,7 @@ func main() {
 				rateSample = float64(deltaAttempts) / math.Max(deltaElapsed.Seconds(), 1e-9)
 			}
 
-			sampleRate := math.Max(rateSample, baselineRate)
+			sampleRate := rateSample
 			if smoothedRate == 0 {
 				smoothedRate = sampleRate
 			} else {
