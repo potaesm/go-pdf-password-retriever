@@ -18,6 +18,7 @@ import (
 const (
 	warmupTrial     = 10 * time.Second
 	warmupLongTrial = 15 * time.Second
+	maxWarmupTrial  = 60 * time.Second
 )
 
 var postTuneMultipliers = []float64{2, 3}
@@ -285,9 +286,17 @@ func runWarmup(baseCfg cracker.Config, base int, trial time.Duration, logFn func
 		workerCandidates = append(workerCandidates, base*factor)
 	}
 
-	for wIdx, workers := range workerCandidates {
+	for _, workers := range workerCandidates {
 		lastRate := -1.0
-		for oIdx, mult := range warmupOvercommitMultipliers {
+		target := float64(workers)
+		overcommitCandidates := []float64{target}
+		for _, mult := range warmupOvercommitMultipliers {
+			if mult == target {
+				continue
+			}
+			overcommitCandidates = append(overcommitCandidates, mult)
+		}
+		for _, mult := range overcommitCandidates {
 			combo := warmupCombo{workers: workers, overcommit: mult}
 			trialDuration := trial
 			if duration := comboTrialDuration(base, combo); duration > trialDuration {
@@ -319,12 +328,6 @@ func runWarmup(baseCfg cracker.Config, base int, trial time.Duration, logFn func
 				break
 			}
 			lastRate = sample.Rate
-			if oIdx < len(warmupOvercommitMultipliers)-1 {
-				time.Sleep(10 * time.Second)
-			}
-		}
-		if wIdx < len(workerCandidates)-1 {
-			time.Sleep(10 * time.Second)
 		}
 	}
 
@@ -336,23 +339,38 @@ func runWarmup(baseCfg cracker.Config, base int, trial time.Duration, logFn func
 }
 
 func runTrial(baseCfg cracker.Config, combo warmupCombo, trial time.Duration) (warmupSample, cracker.Result, error) {
-	cfg := baseCfg
-	cfg.Workers = combo.workers
-	cfg.Overcommit = combo.overcommit
-	ctx, cancel := context.WithTimeout(context.Background(), trial)
-	defer cancel()
-	start := time.Now()
-	res, err := cracker.Crack(ctx, cfg)
-	duration := time.Since(start)
-	attempts := res.Attempts
-	rate := float64(attempts) / math.Max(duration.Seconds(), 1e-9)
-	return warmupSample{
-		combo:    combo,
-		Attempts: attempts,
-		Rate:     rate,
-		Duration: duration,
-		Err:      err,
-	}, res, err
+	duration := trial
+	for {
+		cfg := baseCfg
+		cfg.Workers = combo.workers
+		cfg.Overcommit = combo.overcommit
+		ctx, cancel := context.WithTimeout(context.Background(), duration)
+		start := time.Now()
+		res, err := cracker.Crack(ctx, cfg)
+		cancel()
+		elapsed := time.Since(start)
+		sample := warmupSample{
+			combo:    combo,
+			Attempts: res.Attempts,
+			Rate:     float64(res.Attempts) / math.Max(elapsed.Seconds(), 1e-9),
+			Duration: elapsed,
+			Err:      err,
+		}
+
+		if sample.Attempts > 0 || !errors.Is(err, context.DeadlineExceeded) || duration >= maxWarmupTrial {
+			return sample, res, err
+		}
+
+		duration = minDuration(maxWarmupTrial, duration*2)
+		continue
+	}
+}
+
+func minDuration(a, b time.Duration) time.Duration {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 func comboTrialDuration(base int, combo warmupCombo) time.Duration {
