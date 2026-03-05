@@ -6,7 +6,6 @@ import (
 	"context"
 	"crypto/md5"
 	"crypto/rc4"
-	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -30,9 +29,8 @@ const (
 )
 
 var (
-	ErrPasswordNotFound   = errors.New("password not found")
-	errCheckpointMismatch = errors.New("checkpoint signature mismatch")
-	passwordPadding       = []byte{0x28, 0xBF, 0x4E, 0x5E, 0x4E, 0x75, 0x8A, 0x41, 0x64, 0x00, 0x4E, 0x56, 0xFF, 0xFA, 0x01, 0x08,
+	ErrPasswordNotFound = errors.New("password not found")
+	passwordPadding     = []byte{0x28, 0xBF, 0x4E, 0x5E, 0x4E, 0x75, 0x8A, 0x41, 0x64, 0x00, 0x4E, 0x56, 0xFF, 0xFA, 0x01, 0x08,
 		0x2E, 0x2E, 0x00, 0xB6, 0xD0, 0x68, 0x3E, 0x80, 0x2F, 0x0C, 0xA9, 0xFE, 0x64, 0x53, 0x69, 0x7A}
 	defaultCharset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 )
@@ -70,7 +68,6 @@ type charsetState struct {
 }
 
 type checkpointState struct {
-	Signature      string        `json:"signature"`
 	Mode           string        `json:"mode"`
 	WordlistOffset int64         `json:"wordlist_offset,omitempty"`
 	CharsetState   *charsetState `json:"charset_state,omitempty"`
@@ -78,11 +75,10 @@ type checkpointState struct {
 }
 
 type checkpointSaver struct {
-	path      string
-	interval  time.Duration
-	mu        sync.Mutex
-	last      time.Time
-	signature string
+	path     string
+	interval time.Duration
+	mu       sync.Mutex
+	last     time.Time
 }
 
 type encryptionDict struct {
@@ -164,23 +160,20 @@ func Crack(ctx context.Context, cfg Config) (Result, error) {
 		return Result{}, err
 	}
 
-	signature := runSignature(cfg)
 	resume := checkpointState{}
 	if cfg.CheckpointInterval > 0 && cfg.CheckpointPath != "" {
-		resume, err = loadCheckpoint(cfg.CheckpointPath, signature)
+		resume, err = loadCheckpoint(cfg.CheckpointPath)
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {
 				resume = checkpointState{}
-			} else if errors.Is(err, errCheckpointMismatch) {
+			} else {
 				_ = os.Remove(cfg.CheckpointPath)
 				resume = checkpointState{}
-			} else {
-				return Result{}, err
 			}
 		}
 	}
 
-	saver := newCheckpointSaver(cfg.CheckpointPath, cfg.CheckpointInterval, signature)
+	saver := newCheckpointSaver(cfg.CheckpointPath, cfg.CheckpointInterval)
 
 	totalCandidates, err := computeTotalCandidates(cfg)
 	if err != nil {
@@ -625,17 +618,11 @@ func (it *charsetIterator) passwordBytesAt(idx int64, buf *[]byte) []byte {
 // REMAINING HELPER FUNCTIONS (Untouched Logic)
 // --------------------------------------------------------------------------
 
-func runSignature(cfg Config) string {
-	h := sha256.New()
-	fmt.Fprintf(h, "%s|%s|%s|%d|%d|%d|%f", cfg.PDFPath, cfg.Wordlist, cfg.Charset, cfg.MinPasswordLength, cfg.MaxPasswordLength, cfg.Workers, cfg.Overcommit)
-	return fmt.Sprintf("%x", h.Sum(nil))
-}
-
-func newCheckpointSaver(path string, interval time.Duration, signature string) *checkpointSaver {
+func newCheckpointSaver(path string, interval time.Duration) *checkpointSaver {
 	if path == "" || interval <= 0 {
 		return nil
 	}
-	return &checkpointSaver{path: path, interval: interval, signature: signature}
+	return &checkpointSaver{path: path, interval: interval}
 }
 
 func (s *checkpointSaver) MaybeSave(state checkpointState) error {
@@ -650,7 +637,6 @@ func (s *checkpointSaver) MaybeSave(state checkpointState) error {
 		return nil
 	}
 
-	state.Signature = s.signature
 	data, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {
 		return err
@@ -673,7 +659,7 @@ func (s *checkpointSaver) MaybeSave(state checkpointState) error {
 	return nil
 }
 
-func loadCheckpoint(path, signature string) (checkpointState, error) {
+func loadCheckpoint(path string) (checkpointState, error) {
 	if path == "" {
 		return checkpointState{}, os.ErrNotExist
 	}
@@ -684,9 +670,6 @@ func loadCheckpoint(path, signature string) (checkpointState, error) {
 	var state checkpointState
 	if err := json.Unmarshal(data, &state); err != nil {
 		return checkpointState{}, err
-	}
-	if state.Signature != signature {
-		return checkpointState{}, fmt.Errorf("%w: got %s", errCheckpointMismatch, state.Signature)
 	}
 	return state, nil
 }
