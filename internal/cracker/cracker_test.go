@@ -109,3 +109,28 @@ endobj
 		t.Fatalf("unexpected U literal: %q", got)
 	}
 }
+
+func TestCharsetIteratorPermutedIndex(t *testing.T) {
+	it := &charsetIterator{
+		total:          10,
+		randomOrder:    true,
+		permMultiplier: 3,
+		permAdd:        7,
+	}
+
+	seen := make(map[int64]struct{})
+	for seqIdx := int64(0); seqIdx < it.total; seqIdx++ {
+		mapped := it.permutedIndex(seqIdx)
+		if mapped < 0 || mapped >= it.total {
+			t.Fatalf("mapped index %d out of bounds", mapped)
+		}
+		if _, ok := seen[mapped]; ok {
+			t.Fatalf("duplicate mapped index %d for seq %d", mapped, seqIdx)
+		}
+		seen[mapped] = struct{}{}
+	}
+
+	if len(seen) != int(it.total) {
+		t.Fatalf("expected %d unique indexes, got %d", it.total, len(seen))
+	}
+}
