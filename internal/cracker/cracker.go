@@ -13,6 +13,7 @@ import (
 	"io"
 	"math"
 	"math/big"
+	"math/rand"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -43,6 +44,7 @@ type Config struct {
 	MaxPasswordLength  int
 	Workers            int
 	Overcommit         float64
+	RandomOrder        bool
 	CheckpointPath     string
 	CheckpointInterval time.Duration
 	ProgressInterval   time.Duration
@@ -197,7 +199,7 @@ func Crack(ctx context.Context, cfg Config) (Result, error) {
 	if cfg.Wordlist == "" {
 		resumeIndex := resumeCharsetIndex(resume.CharsetState, len(cfg.Charset), cfg.MinPasswordLength)
 		var err error
-		charsetIter, err = newCharsetIterator(cfg.Charset, cfg.MinPasswordLength, cfg.MaxPasswordLength, resumeIndex)
+		charsetIter, err = newCharsetIterator(cfg.Charset, cfg.MinPasswordLength, cfg.MaxPasswordLength, resumeIndex, cfg.RandomOrder)
 		if err != nil {
 			return Result{}, err
 		}
@@ -286,11 +288,12 @@ func Crack(ctx context.Context, cfg Config) (Result, error) {
 						return
 					}
 
-					for idx := startIdx; idx < endIdx; idx++ {
+					for seqIdx := startIdx; seqIdx < endIdx; seqIdx++ {
+						idx := charsetIter.permutedIndex(seqIdx)
 						pwBytes := charsetIter.passwordBytesAt(idx, &passBuf)
 						key := encryptionKeyFast(pwBytes, enc, ws)
 						if key != nil && isValidUserPasswordFast(key, enc, ws) {
-							atomic.AddInt64(&attempts, int64(idx-startIdx+1))
+							atomic.AddInt64(&attempts, int64(seqIdx-startIdx+1))
 							select {
 							case found <- string(pwBytes):
 								cancel()
@@ -516,11 +519,14 @@ func streamWordlist(ctx context.Context, path string, resume checkpointState, at
 }
 
 type charsetIterator struct {
-	charset []byte
-	base    int
-	ranges  []charsetRange
-	total   int64
-	next    int64
+	charset        []byte
+	base           int
+	ranges         []charsetRange
+	total          int64
+	next           int64
+	randomOrder    bool
+	permMultiplier uint64
+	permAdd        uint64
 }
 
 type charsetRange struct {
@@ -529,7 +535,7 @@ type charsetRange struct {
 	end    int64
 }
 
-func newCharsetIterator(charset string, minLen, maxLen int, resumeIndex int64) (*charsetIterator, error) {
+func newCharsetIterator(charset string, minLen, maxLen int, resumeIndex int64, randomOrder bool) (*charsetIterator, error) {
 	if len(charset) == 0 {
 		return nil, errors.New("charset cannot be empty")
 	}
@@ -564,13 +570,57 @@ func newCharsetIterator(charset string, minLen, maxLen int, resumeIndex int64) (
 		}
 	}
 
-	return &charsetIterator{
-		charset: []byte(charset),
-		base:    len(charset),
-		ranges:  ranges,
-		total:   start,
-		next:    min(resumeIndex, start),
-	}, nil
+	it := &charsetIterator{
+		charset:     []byte(charset),
+		base:        len(charset),
+		ranges:      ranges,
+		total:       start,
+		next:        min(resumeIndex, start),
+		randomOrder: randomOrder,
+	}
+	if randomOrder {
+		it.initPermutation()
+	}
+	return it, nil
+}
+
+func (it *charsetIterator) initPermutation() {
+	total := uint64(it.total)
+	if total == 0 {
+		return
+	}
+	r := rand.New(rand.NewSource(time.Now().UnixNano()))
+
+	for {
+		mul := uint64(r.Int63()) | 1
+		if mul == 0 {
+			continue
+		}
+		if gcdUint64(mul, total) != 1 {
+			continue
+		}
+		it.permMultiplier = mul
+		it.permAdd = uint64(r.Int63()) % total
+		break
+	}
+}
+
+func (it *charsetIterator) permutedIndex(idx int64) int64 {
+	if !it.randomOrder || it.total == 0 {
+		return idx
+	}
+
+	if idx < 0 {
+		idx = 0
+	}
+
+	total := uint64(it.total)
+	if total == 0 {
+		return idx
+	}
+
+	mapped := (uint64(idx)*it.permMultiplier + it.permAdd) % total
+	return int64(mapped)
 }
 
 // Claim atomically grabs a batch of sequence indices for a worker to process locally
@@ -1197,4 +1247,11 @@ func expectFile(path string) error {
 		return fmt.Errorf("PDF path invalid: %w", err)
 	}
 	return nil
+}
+
+func gcdUint64(a, b uint64) uint64 {
+	for b != 0 {
+		a, b = b, a%b
+	}
+	return a
 }

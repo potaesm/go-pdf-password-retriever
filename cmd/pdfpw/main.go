@@ -80,6 +80,7 @@ func main() {
 	minLen := flag.Int("min", 1, "minimum password length when generating candidates")
 	maxLen := flag.Int("max", 4, "maximum password length when generating candidates")
 	discover := flag.Bool("discover", false, "run the discovery/warmup phase and exit with recommendations")
+	randomOrder := flag.Bool("random-order", false, "shuffle the charset order to avoid sequential candidates")
 	var workersFlag trackedIntFlag
 	defaultWorkers := runtime.NumCPU() * runtime.NumCPU()
 	workersFlag.value = defaultWorkers
@@ -119,6 +120,7 @@ func main() {
 			Charset:            *charset,
 			MinPasswordLength:  *minLen,
 			MaxPasswordLength:  *maxLen,
+			RandomOrder:        *randomOrder,
 			Workers:            runtime.NumCPU(),
 			Overcommit:         1,
 			CheckpointPath:     cpPath,
@@ -233,6 +235,7 @@ func main() {
 		MaxPasswordLength:  *maxLen,
 		Workers:            workersVal,
 		Overcommit:         workerOver,
+		RandomOrder:        *randomOrder,
 		CheckpointPath:     cpPath,
 		CheckpointInterval: *checkpointInterval,
 		ProgressInterval:   *progressInterval,
